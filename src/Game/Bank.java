@@ -19,17 +19,26 @@
 package Game;
 
 import Client.Settings;
+import Client.Logger;
+
+import java.util.Arrays;
 
 public class Bank {
+  private static int[] bankItemsActual = new int[256];
+  private static int[] bankItemCountsActual = new int[256];
+  private static int bankNumberOfItemsActual = 0;
+  private static int searchableResults = 0;
 
   /**
    * This method resets the query flag and "exclude inventory-only item" flag, it sets up first time
    * visiting bank flag
    */
   public static void openedBankInterfaceHook() {
-    Client.new_bank_items[253] = 0;
-    Client.new_bank_items[254] = 1;
-    Client.new_bank_items[255] = 0;
+    // this triggers before opcode 42 is processed
+    Logger.Info("openedBankInterfaceHook");
+    Client.new_bank_items[253] = 0; // TODO: refactor to hideInventoryItems bool
+    Client.new_bank_items[254] = 1; // TODO: refactor to firstBankOpen bool
+    Client.new_bank_items[255] = 0; // TODO: refactor to searchableMode bool
   }
 
   /**
@@ -37,6 +46,8 @@ public class Bank {
    * mode otherwise it enters weird glitch mode as user does operations of withdraw/deposit on items
    */
   public static void finalBankItemsHook() {
+    Logger.Info("finalBankItemsHook");
+
     if (Client.new_bank_items[253] != 0) {
       // remove inventory only items shown at bank, if its in searchable bank mode
       // to remove some glitches
@@ -59,150 +70,193 @@ public class Bank {
    * indicates user is in "searchable bank" mode
    */
   public static void updateBankItemsHook() {
+
     if (Client.new_bank_items[254] == 1) {
+      Logger.Info("updateBankItemsHook 1");
       // first time bank interface, unset the flag
       Client.new_bank_items[254] = 0;
-      if (Settings.START_SEARCHEDBANK.get("custom")
-          && !Settings.SEARCH_BANK_WORD.get("custom").equals("")) {
-        int[] tmpBankItems = Client.bank_items.clone();
-        int[] tmpBankItemsCount = Client.bank_items_count.clone();
-        int[] tmpNewBankItems = Client.new_bank_items.clone();
-        int[] tmpNewBankItemsCount = Client.new_bank_items_count.clone();
-        // clear everything to avoid error
-        for (int i = 0; i < Client.bank_items.length; i++) {
-          Client.bank_items[i] = 0;
-          Client.bank_items_count[i] = 0;
-          Client.new_bank_items[i] = 0;
-          Client.new_bank_items_count[i] = 0;
-          Client.count_items_bank = 0;
-          Client.new_count_items_bank = 0;
+
+      bankItemsActual = Client.new_bank_items.clone();
+      bankItemCountsActual = Client.new_bank_items_count.clone();
+      bankNumberOfItemsActual = Client.new_count_items_bank;
+
+      if (Settings.SORT_BANK.get(Settings.currentProfile) >= 0) {
+        sortBank();
+      }
+
+      boolean searching = Settings.START_SEARCHEDBANK.get("custom") && !Settings.SEARCH_BANK_WORD.get("custom").equals("");
+      if (searching) {
+        applySearch(Settings.SEARCH_BANK_WORD.get("custom"), true);
+      }
+    } else {
+      Logger.Info("updateBankItemsHook 0");
+      boolean b = Client.new_bank_items[255] == 1;
+
+      if (b) {
+        // this flag needs to be unset itself because it can cause noise when detecting changed item
+        Client.new_bank_items[255] = 0;
+      }
+
+      if (Settings.SORT_BANK.get(Settings.currentProfile) >= 0) {
+        sortBank();
+
+      }
+
+      // only shown items saved in bank = queried bank
+      boolean isQueried = true;
+      int array_len = 256;
+      for (int l = Client.new_count_items_bank; l < array_len; l++) {
+        if (Client.bank_items[l] != 0 && Client.bank_items_count[l] == 0) {
+          isQueried = false;
+          break;
         }
+      }
+
+      if (isQueried || Settings.SORT_BANK.get(Settings.currentProfile) >= 0) {
+        fixInventoryItemsOnUpdate();
+      }
+
+      if (b) {
+        // all operations finished, set searchable bank mode back on
+        Client.new_bank_items[255] = 1;
+      }
+
+    }
+  }
+
+  private static void sortBank() {
+    Logger.Info("Sorting bank");
+
+    int idx = 0;
+    int[] tmpNewBankItems = new int[256];
+    int[] tmpNewBankItemsCount = new int[256];
+
+    // slow sort which is fast enough
+    for (int itemId = 0; itemId < 1290; itemId++) {
+      for (int i = 0; i < 255; i++) {
+        if (Client.new_bank_items[i] == itemId && Client.new_bank_items_count[i] != 0) {
+          System.out.print(Client.new_bank_items[i] + ", ");
+          tmpNewBankItems[idx] = Client.new_bank_items[i];
+          tmpNewBankItemsCount[idx] = Client.new_bank_items_count[i];
+          ++idx;
+          i = 256;
+        }
+      }
+    }
+
+    System.out.println();
+
+    tmpNewBankItems[253] = Client.new_bank_items[253];
+    tmpNewBankItems[254] = Client.new_bank_items[254];
+    tmpNewBankItems[255] = Client.new_bank_items[255];
+
+    Client.new_bank_items = tmpNewBankItems;
+    Client.new_bank_items_count = tmpNewBankItemsCount;
+
+  }
+
+  // TODO: a big part of this code is just struggling to figure out which item changed.
+  // Could benefit from a refactor where deposit/withdraw is just directly hooked to get itemID
+  private static void fixInventoryItemsOnUpdate() {
+    int array_len = 256;
+    try {
+      // fix updating bank interface from deposit/withdraw after querying bank
+
+      // need to detect changed item
+      int posChanged, itemIdChanged, itemCountChanged;
+      itemIdChanged = itemCountChanged = posChanged = -1;
+
+      for (int i = 0; i < Client.new_count_items_bank; i++) {
+        if (Client.new_bank_items[i] != Client.bank_items[i]
+          && !(Client.new_bank_items[i] == 0 && Client.new_bank_items_count[i] == 0)) {
+          if (Client.new_bank_items[i] == Client.bank_items[i + 1]
+            && Client.new_bank_items_count[i] == Client.bank_items_count[i + 1]) continue;
+
+          itemIdChanged = Client.new_bank_items[i];
+          itemCountChanged = Client.new_bank_items_count[i];
+          posChanged = i;
+
+          Logger.Info("AAAAA1 " + itemIdChanged + " " + itemCountChanged + " i: " + posChanged);
+
+          break;
+        }
+      }
+      if (posChanged != -1) {
+        // update changed item onto tempBankItems
+        for (int i = 0; i < Client.new_count_items_bank; i++) {
+          // did not withdraw all, can also be deposit some
+          if (Client.bank_items[i] == itemIdChanged
+            && Client.bank_items_count[i] != 0
+            && itemCountChanged > 0) {
+            Client.new_bank_items_count[i] = itemCountChanged;
+            if (Client.bank_items_count[posChanged] != 0
+              && Client.bank_items[posChanged] != 0) {
+              Logger.Info("BBBBBBB2");
+              Client.new_bank_items[posChanged] = Client.bank_items[posChanged];
+              Client.new_bank_items_count[posChanged] = Client.bank_items_count[posChanged];
+            } else {
+              Logger.Info("CCCCC3");
+              Client.new_bank_items[posChanged] = Client.bank_items[posChanged];
+              Client.new_bank_items_count[posChanged] = Client.bank_items_count[posChanged];
+            }
+            break;
+          }
+        }
+
+
+        // cleanup (might be redundant) but better safe
+        int[] tmpNewItems = new int[array_len];
+        int[] tmpNewItemsCount = new int[array_len];
         int n = 0;
-        // place only those items matching the criteria
-        for (int i = 0; i < tmpNewBankItems.length; i++) {
-          if (tmpNewBankItemsCount[i] == 0) break;
-          if (Item.item_name[tmpNewBankItems[i]]
-              .toLowerCase()
-              .contains(Settings.SEARCH_BANK_WORD.get("custom").toLowerCase())) {
-            Client.bank_items[n] = tmpBankItems[i];
-            Client.bank_items_count[n] = tmpBankItemsCount[i];
-            Client.new_bank_items[n] = tmpNewBankItems[i];
-            Client.new_bank_items_count[n] = tmpNewBankItemsCount[i];
+        for (int i = 0; i < array_len; i++) {
+          if (!(Client.new_bank_items[i] == 0 && Client.new_bank_items_count[i] == 0)) {
+            tmpNewItems[n] = Client.new_bank_items[n];
+            tmpNewItemsCount[n] = Client.new_bank_items_count[n];
             n++;
           }
         }
 
-        Client.count_items_bank = n;
+        Client.new_bank_items = tmpNewItems;
+        Client.new_bank_items_count = tmpNewItemsCount;
         Client.new_count_items_bank = n;
-        // in searchable bank, setting this flag also to indicate to remove inventory only items
-        Client.new_bank_items[253] = 1;
-        Client.new_bank_items[255] = 1;
-      }
-    } else {
-      if (Client.new_bank_items[255] == 1) {
-        // this flag needs to be unset itself because it can cause noise when detecting changed item
-        Client.new_bank_items[255] = 0;
-        // only shown items saved in bank = queried bank
-        boolean isQueried = true;
-        int array_len = 256;
-        for (int l = Client.new_count_items_bank; l < array_len; l++) {
-          if (Client.bank_items[l] != 0 && Client.bank_items_count[l] == 0) {
-            isQueried = false;
-            break;
+        Client.count_items_bank = n;
+
+      } else {
+        // Could not detect which position changed since new_bank_items are exactly the same
+        // as bank_items -> check inventory items until match.
+        // if not ??
+
+        int i, j;
+        i = j = 0;
+        for (i = 0; i < Client.inventory_count; i++) {
+          for (j = 0; j < Client.new_count_items_bank; j++) {
+            if (Client.inventory_items[i] == Client.new_bank_items[j]) {
+              posChanged = j;
+              Logger.Info("EEEEEE " + j + " " + Client.inventory_items[i]);
+              break;
+            }
           }
         }
-        if (isQueried) {
-          try {
-            // fix updating bank interface from deposit/withdraw after querying bank
-
-            // need to detect changed item
-            int posChanged, itemIdChanged, itemCountChanged;
-            itemIdChanged = itemCountChanged = posChanged = -1;
-
-            for (int i = 0; i < Client.new_count_items_bank; i++) {
-              if (Client.new_bank_items[i] != Client.bank_items[i]
-                  && !(Client.new_bank_items[i] == 0 && Client.new_bank_items_count[i] == 0)) {
-                if (Client.new_bank_items[i] == Client.bank_items[i + 1]
-                    && Client.new_bank_items_count[i] == Client.bank_items_count[i + 1]) continue;
-
-                itemIdChanged = Client.new_bank_items[i];
-                itemCountChanged = Client.new_bank_items_count[i];
-                posChanged = i;
-
-                break;
-              }
-            }
-            if (posChanged != -1) {
-              // update changed item onto tempBankItems
-              for (int i = 0; i < Client.new_count_items_bank; i++) {
-                // did not withdraw all, can also be deposit some
-                if (Client.bank_items[i] == itemIdChanged
-                    && Client.bank_items_count[i] != 0
-                    && itemCountChanged > 0) {
-                  Client.new_bank_items_count[i] = itemCountChanged;
-                  if (Client.bank_items_count[posChanged] != 0
-                      && Client.bank_items[posChanged] != 0) {
-                    Client.new_bank_items[posChanged] = Client.bank_items[posChanged];
-                    Client.new_bank_items_count[posChanged] = Client.bank_items_count[posChanged];
-                  } else {
-                    Client.new_bank_items[posChanged] = Client.bank_items[posChanged];
-                    Client.new_bank_items_count[posChanged] = Client.bank_items_count[posChanged];
-                  }
-                  break;
-                }
-              }
-
-              // cleanup (might be redundant) but better safe
-              int[] tmpNewItems = new int[array_len];
-              int[] tmpNewItemsCount = new int[array_len];
-              int n = 0;
-              for (int i = 0; i < array_len; i++) {
-                if (!(Client.new_bank_items[i] == 0 && Client.new_bank_items_count[i] == 0)) {
-                  tmpNewItems[n] = Client.new_bank_items[n];
-                  tmpNewItemsCount[n] = Client.new_bank_items_count[n];
-                  n++;
-                }
-              }
-
-              Client.new_bank_items = tmpNewItems;
-              Client.new_bank_items_count = tmpNewItemsCount;
-              Client.new_count_items_bank = n;
-              Client.count_items_bank = n;
-            } else {
-              // Could not detect which position changed since new_bank_items are exactly the same
-              // as bank_items -> check inventory items until match.
-              // if not ??
-
-              int i, j;
-              i = j = 0;
-              for (i = 0; i < Client.inventory_count; i++) {
-                for (j = 0; j < Client.new_count_items_bank; j++) {
-                  if (Client.inventory_items[i] == Client.new_bank_items[j]) {
-                    posChanged = j;
-                    break;
-                  }
-                }
-              }
-              if (posChanged != -1) {
-                // move elements up from index to fix glitch
-                for (i = posChanged; i < Client.new_count_items_bank; i++) {
-                  Client.new_bank_items[i] = Client.new_bank_items[i + 1];
-                  Client.new_bank_items_count[i] = Client.new_bank_items_count[i + 1];
-                }
-                Client.new_bank_items[i] = Client.new_bank_items[i - 1];
-                Client.new_bank_items_count[i] = Client.new_bank_items_count[i - 1];
-              }
-            }
-
-            // in searchable bank, setting this flag also to indicate to remove inventory only items
-            Client.new_bank_items[253] = 1;
-          } catch (Exception e) {
-            e.printStackTrace();
+        if (posChanged != -1) {
+          // move elements up from index to fix glitch
+          if (i < Client.new_count_items_bank) {
+            Logger.Info("FFFFFFFFF shifting while " + posChanged + "++ < " + Client.new_count_items_bank + ";");
           }
+          for (i = posChanged; i < Client.new_count_items_bank; i++) {
+            Client.new_bank_items[i] = Client.new_bank_items[i + 1];
+            Client.new_bank_items_count[i] = Client.new_bank_items_count[i + 1];
+
+          }
+          Client.new_bank_items[i] = Client.new_bank_items[i - 1];
+          Client.new_bank_items_count[i] = Client.new_bank_items_count[i - 1];
+          Logger.Info("GGGGGGGG7");
         }
-        // all operations finished, set searchable bank mode back on
-        Client.new_bank_items[255] = 1;
       }
+
+      // in searchable bank, setting this flag also to indicate to remove inventory only items
+      Client.new_bank_items[253] = 1;
+    } catch (Exception e) {
+      e.printStackTrace();
     }
   }
 
@@ -229,7 +283,7 @@ public class Bank {
    * @param search The complete clean search query to do the search
    * @param help display help on command
    */
-  public static void bankSearch(String search, boolean help) {
+  private static void bankSearch(String search, boolean help) {
     if (search.trim().equals("") || help) {
       Client.displayMessage("@whi@::banksearch is a searchable bank mode", Client.CHAT_QUEST);
       Client.displayMessage(
@@ -244,39 +298,118 @@ public class Bank {
         Client.displayMessage(
             "@whi@::banksearch is only available when bank interface is open", Client.CHAT_QUEST);
       } else {
-        // overwrite query string on local config
-        Settings.SEARCH_BANK_WORD.put("custom", search);
-        Settings.save();
-        int[] tmpBankItems = Client.bank_items.clone();
-        int[] tmpBankItemsCount = Client.bank_items_count.clone();
-        int[] tmpNewBankItems = Client.new_bank_items.clone();
-        int[] tmpNewBankItemsCount = Client.new_bank_items_count.clone();
-        // clear everything to avoid error
-        for (int i = 0; i < Client.bank_items.length; i++) {
-          Client.bank_items[i] = 0;
-          Client.bank_items_count[i] = 0;
-          Client.new_bank_items[i] = 0;
-          Client.new_bank_items_count[i] = 0;
-          Client.count_items_bank = 0;
-          Client.new_count_items_bank = 0;
+        if (search.trim().equals("reset")) {
+          // resetSearch();
+          Client.displayMessage(
+            "@whi@Reset bank search not implemented lol.", Client.CHAT_QUEST);
+        } else {
+          Settings.SEARCH_BANK_WORD.put("custom", search);
+          Settings.save();
+          applySearch(search, false);
         }
-        int n = 0;
-        // place only those items matching the criteria
-        for (int i = 0; i < tmpNewBankItems.length; i++) {
-          if (tmpBankItemsCount[i] == 0) break;
-          if (Item.item_name[tmpBankItems[i]].toLowerCase().contains(search.toLowerCase())) {
-            Client.bank_items[n] = tmpBankItems[i];
-            Client.bank_items_count[n] = tmpBankItemsCount[i];
-            Client.new_bank_items[n] = tmpNewBankItems[i];
-            Client.new_bank_items_count[n] = tmpNewBankItemsCount[i];
-            n++;
-          }
-        }
-
-        Client.count_items_bank = n;
-        Client.new_count_items_bank = n;
-        Client.new_bank_items[255] = 1;
       }
+    }
+  }
+
+  // TODO: this doesn't work lol
+  private static void resetSearch() {
+    Client.new_bank_items = bankItemsActual.clone();
+    Client.new_bank_items_count = bankItemCountsActual.clone();
+    Client.bank_items = Client.new_bank_items.clone();
+    Client.bank_items_count = Client.new_bank_items_count.clone();
+    Client.count_items_bank = Client.new_count_items_bank = bankNumberOfItemsActual;
+    Client.new_bank_items[253] = 0;
+    Client.new_bank_items[255] = 0;
+    fixInventoryItemsOnUpdate();
+  }
+
+  private static void applySearch(String search, boolean setNoInventoryItems) {
+    Logger.Debug("searching for " + search + "; " + setNoInventoryItems);
+    int[] tmpBankItems = Client.bank_items.clone();
+    int[] tmpBankItemsCount = Client.bank_items_count.clone();
+    int[] tmpNewBankItems = Client.new_bank_items.clone();
+    int[] tmpNewBankItemsCount = Client.new_bank_items_count.clone();
+    int tmpBankCountItems = Client.count_items_bank;
+
+    // clear everything to avoid error
+    for (int i = 0; i < Client.bank_items.length; i++) {
+      Client.bank_items[i] = 0;
+      Client.bank_items_count[i] = 0;
+      Client.new_bank_items[i] = 0;
+      Client.new_bank_items_count[i] = 0;
+      Client.count_items_bank = 0;
+      Client.new_count_items_bank = 0;
+    }
+    int n = 0;
+    // place only those items matching the criteria
+    for (int i = 0; i < tmpBankCountItems; i++) {
+      // System.out.print(i + ": " + Item.item_name[tmpNewBankItems[i]].toLowerCase() + ", ");
+      if (setNoInventoryItems) {
+        if (tmpBankItemsCount[i] == 0) break;
+      } else {
+        if (tmpNewBankItemsCount[i] == 0) break;
+      }
+
+      if (Item.item_name[tmpNewBankItems[i]].toLowerCase().contains(search.toLowerCase())) {
+        Client.bank_items[n] = tmpBankItems[i];
+        Client.bank_items_count[n] = tmpBankItemsCount[i];
+        Client.new_bank_items[n] = tmpNewBankItems[i];
+        Client.new_bank_items_count[n] = tmpNewBankItemsCount[i];
+        n++;
+      }
+    }
+    // System.out.println();
+
+    Client.count_items_bank = n;
+    Client.new_count_items_bank = n;
+    // in searchable bank, setting this flag also to indicate to remove inventory only items
+
+    if (setNoInventoryItems) {
+      Client.new_bank_items[253] = 1;
+    }
+
+    Client.new_bank_items[255] = 1;
+  }
+
+  private static void applySearcha(String search, boolean searching) {
+
+    int[] tmpBankItems = Client.bank_items.clone();
+    int[] tmpBankItemsCount = Client.bank_items_count.clone();
+    int[] tmpNewBankItems = Client.new_bank_items.clone(); // item ids
+    int[] tmpNewBankItemsCount = Client.new_bank_items_count.clone();
+    int tmpBankCountItems = Client.count_items_bank;
+    if (searching) {
+      // clear everything to avoid error
+      for (int i = 0; i < Client.bank_items.length; i++) {
+        Client.bank_items[i] = 0;
+        Client.bank_items_count[i] = 0;
+        Client.new_bank_items[i] = 0;
+        Client.new_bank_items_count[i] = 0;
+        Client.count_items_bank = 0;
+        Client.new_count_items_bank = 0;
+      }
+    }
+    searchableResults = 0;
+    // place only those items matching the criteria
+    for (int i = 0; i < tmpBankCountItems; i++) {
+
+      if (tmpNewBankItemsCount[i] == 0) break;
+      if (searching) {
+        if (Item.item_name[tmpNewBankItems[i]].toLowerCase().contains(search.toLowerCase())) {
+          Client.bank_items[searchableResults] = tmpBankItems[i];
+          Client.bank_items_count[searchableResults] = tmpBankItemsCount[i];
+          Client.new_bank_items[searchableResults] = tmpNewBankItems[i];
+          Client.new_bank_items_count[searchableResults] = tmpNewBankItemsCount[i];
+          ++searchableResults;
+        }
+      }
+    }
+
+
+    if (searching) {
+      Client.count_items_bank = searchableResults;
+      Client.new_count_items_bank = searchableResults;
+      Client.new_bank_items[253] = 1;
     }
   }
 

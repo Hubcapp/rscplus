@@ -106,6 +106,7 @@ public class Settings {
   public static HashMap<String, Boolean> PATCH_GENDER = new HashMap<String, Boolean>();
   public static HashMap<String, Boolean> START_SEARCHEDBANK = new HashMap<String, Boolean>();
   public static HashMap<String, String> SEARCH_BANK_WORD = new HashMap<String, String>();
+  public static HashMap<String, Integer> SORT_BANK = new HashMap<String, Integer>();
   public static HashMap<String, Integer> LOG_VERBOSITY = new HashMap<String, Integer>();
   public static HashMap<String, Boolean> LOG_SHOW_TIMESTAMPS = new HashMap<String, Boolean>();
   public static HashMap<String, Boolean> LOG_SHOW_LEVEL = new HashMap<String, Boolean>();
@@ -560,6 +561,7 @@ public class Settings {
     PATCH_GENDER.put("all", true);
     PATCH_GENDER.put("custom", getPropBoolean(props, "patch_gender", PATCH_GENDER.get("default")));
 
+
     START_SEARCHEDBANK.put("vanilla", false);
     START_SEARCHEDBANK.put("vanilla_resizable", false);
     START_SEARCHEDBANK.put("lite", false);
@@ -577,6 +579,14 @@ public class Settings {
     SEARCH_BANK_WORD.put("all", "");
     SEARCH_BANK_WORD.put(
         "custom", getPropString(props, "search_bank_word", SEARCH_BANK_WORD.get("default")));
+
+    SORT_BANK.put("vanilla", -1);
+    SORT_BANK.put("vanilla_resizable", -1);
+    SORT_BANK.put("lite", -1);
+    SORT_BANK.put("default", 0); // TODO: should be off by default
+    SORT_BANK.put("heavy", 0);
+    SORT_BANK.put("all", 0);
+    SORT_BANK.put("custom", getPropInt(props, "sort_bank", SORT_BANK.get("default")));
 
     LOG_VERBOSITY.put("vanilla", Logger.Type.GAME.id);
     LOG_VERBOSITY.put("vanilla_resizable", Logger.Type.GAME.id);
@@ -1675,6 +1685,7 @@ public class Settings {
       props.setProperty("patch_gender", Boolean.toString(PATCH_GENDER.get(preset)));
       props.setProperty("start_searched_bank", Boolean.toString(START_SEARCHEDBANK.get(preset)));
       props.setProperty("search_bank_word", SEARCH_BANK_WORD.get(preset));
+      props.setProperty("sort_bank", Integer.toString(SORT_BANK.get(preset)));
       props.setProperty("log_verbosity", Integer.toString(LOG_VERBOSITY.get(preset)));
       props.setProperty("log_show_timestamps", Boolean.toString(LOG_SHOW_TIMESTAMPS.get(preset)));
       props.setProperty("log_show_level", Boolean.toString(LOG_SHOW_LEVEL.get(preset)));
